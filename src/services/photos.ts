@@ -19,32 +19,8 @@ type Album = {
     }> | null
 }
 
-interface SharedAlbum {
-    guid: string;
-    title: string;
-    ctag: string;
-    location: string;
-    ownerId: string;
-    isPublic: boolean;
-    allowContributions: boolean;
-    creationDate: number;
-    getPhotos(): Promise<Array<SharedAlbumAsset>>;
-}
-
-interface SharedAlbumAsset {
-    guid: string;
-    filename: string;
-    size: number;
-    created: number;
-    assetDate: number;
-    addedDate: number;
-    dimension: {
-        width: number;
-        height: number;
-    };
-    downloadURL: string;
-    download(): Promise<ArrayBuffer>;
-}
+type MasterRecord = UnknownRecord & {recordType: "CPLMaster"}
+type AssetRecord = UnknownRecord & {recordType: "CPLAsset"}
 
 interface Folder {
     recordName: string
@@ -329,9 +305,6 @@ interface UnknownRecord {
   }
 }
 
-type MasterRecord = UnknownRecord & {recordType: "CPLMaster"}
-type AssetRecord = UnknownRecord & {recordType: "CPLAsset"}
-
 interface QueryPhotoResponse {
     records: Array<MasterRecord | AssetRecord>
     continuationMarker: string
@@ -583,8 +556,8 @@ export class iCloudPhotosService {
     }
     get all() { return this._albums.get("All Photos"); }
 
-    async getSharedAlbums(): Promise<Map<string, SharedAlbum>> {
-        const sharedAlbums = new Map<string, SharedAlbum>();
+    async getSharedAlbums(): Promise<Map<string, iCloudSharedPhotoAlbum>> {
+        const sharedAlbums = new Map<string, iCloudSharedPhotoAlbum>();
         
         // Get shared albums list
         const albumsResponse = await this.sharedEndpointService.fetch<{albums: Array<{
@@ -947,16 +920,6 @@ class iCloudPhotoAsset {
 }
 
 class iCloudSharedPhotoAsset {
-    private readonly PHOTO_VERSION_LOOKUP = {
-        original: "resOriginal",
-        medium: "resJPEGMed",
-        thumb: "resJPEGThumb"
-    };
-    private readonly VIDEO_VERSION_LOOKUP = {
-        original: "resOriginal",
-        medium: "resVidMed",
-        thumb: "resVidSmall"
-    };
     private _versions = {};
 
     constructor(
