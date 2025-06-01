@@ -444,6 +444,33 @@ const SMART_FOLDERS = {
     }
 };
 
+interface SharedAlbum {
+    guid: string;
+    title: string;
+    ctag: string;
+    location: string;
+    ownerId: string;
+    isPublic: boolean;
+    allowContributions: boolean;
+    creationDate: number;
+    getAssets(): Promise<Array<SharedAlbumAsset>>;
+}
+
+interface SharedAlbumAsset {
+    guid: string;
+    filename: string;
+    size: number;
+    created: number;
+    assetDate: number;
+    addedDate: number;
+    dimension: {
+        width: number;
+        height: number;
+    };
+    downloadURL: string;
+    download(): Promise<ArrayBuffer>;
+}
+
 export class iCloudPhotosEndpointService {
     /* eslint-disable no-useless-constructor, no-empty-function */
     constructor(private serviceUri: string, private headers: HeadersInit) {}
@@ -473,12 +500,49 @@ export class iCloudPhotosEndpointService {
     }
 }
 
+export class iCloudSharedPhotosEndpointService {
+    /* eslint-disable no-useless-constructor, no-empty-function */
+    constructor(private serviceUri: string, private headers: HeadersInit) {}
+    /* eslint-enable no-useless-constructor, no-empty-function */
+    async fetch<T = unknown>(url: string, body?: object, headers?: HeadersInit): Promise<T> {
+        const fullUrl = `${this.serviceUri}${url}`;
+        const requestHeaders = {
+            ...this.headers,
+            "Content-Type": "application/json",
+            ...headers
+        };
+
+        const result = await fetch(
+            fullUrl,
+            {
+                method: "POST",
+                headers: requestHeaders,
+                body: body ? JSON.stringify(body) : undefined
+            }
+        );
+
+        const text = await result.text();
+        try {
+            const json = JSON.parse(text);
+            if (json.error) throw new Error(json.error + ": " + json.reason);
+            return json;
+        } catch (err) {
+            throw err;
+        }
+    }
+}
 
 export class iCloudPhotosService {
     private endpointService: iCloudPhotosEndpointService;
+    private sharedEndpointService: iCloudSharedPhotosEndpointService;
     private _albums: Map<string, iCloudPhotoAlbum> = new Map();
     constructor(private service: iCloudService, private serviceUri: string) {
         this.endpointService = new iCloudPhotosEndpointService(serviceUri, service.authStore.getHeaders());
+        // Use the sharedstreams URL from the account info and add the dsid
+        const baseUrl = service.accountInfo.webservices.sharedstreams.url;
+        const dsid = service.accountInfo.dsInfo.dsid;
+        const sharedUri = `${baseUrl}/${dsid}`;
+        this.sharedEndpointService = new iCloudSharedPhotosEndpointService(sharedUri, service.authStore.getHeaders());
     }
     async getAlbums(): Promise<Map<string, iCloudPhotoAlbum>> {
         if (this._albums.size > 0)
@@ -518,6 +582,96 @@ export class iCloudPhotosService {
         return this._albums;
     }
     get all() { return this._albums.get("All Photos"); }
+
+    async getSharedAlbums(): Promise<Map<string, SharedAlbum>> {
+        const sharedAlbums = new Map<string, SharedAlbum>();
+        
+        // Get shared albums list
+        const albumsResponse = await this.sharedEndpointService.fetch<{albums: Array<{
+            albumlocation: string;
+            albumctag: string;
+            ownerdsid: string;
+            attributes: {
+                name: string;
+                allowcontributions: string;
+                ispublic: string;
+                creationDate: number;
+            };
+            sharingtype: string;
+            iswebuploadsupported: string;
+            albumguid: string;
+        }>}>(
+            "/sharedstreams/webgetalbumslist",
+            {}
+        );
+
+        // Create album objects with a method to fetch assets
+        for (const album of albumsResponse.albums) {
+            const sharedAlbum: SharedAlbum = {
+                guid: album.albumguid,
+                title: album.attributes.name,
+                ctag: album.albumctag,
+                location: album.albumlocation,
+                ownerId: album.ownerdsid,
+                isPublic: album.attributes.ispublic === "1",
+                allowContributions: album.attributes.allowcontributions === "1",
+                creationDate: album.attributes.creationDate,
+                getAssets: async () => {
+                    const albumUrl = new URL(album.albumlocation);
+                    const dsid = album.ownerdsid;
+                    const albumEndpointService = new iCloudSharedPhotosEndpointService(
+                        `${albumUrl.origin}/${dsid}`,
+                        this.service.authStore.getHeaders()
+                    );
+
+                    const assetsResponse = await albumEndpointService.fetch<{records: Array<{
+                        recordName: string;
+                        recordType: string;
+                        fields: {
+                            filenameEnc: { value: string; type: string };
+                            resOriginalRes: { value: { downloadURL: string } };
+                            resOriginalWidth: { value: number };
+                            resOriginalHeight: { value: number };
+                            originalCreationDate: { value: number };
+                            resOriginalFileSize: { value: number };
+                        };
+                    }>}>(
+                        "/sharedstreams/webgetassets",
+                        {
+                            albumguid: album.albumguid,
+                            offset: "0",
+                            limit: "100",
+                            albumctag: album.albumctag
+                        }
+                    );
+
+                    return assetsResponse.records.map(record => ({
+                        guid: record.recordName,
+                        filename: record.fields.filenameEnc?.value ? Buffer.from(record.fields.filenameEnc.value, "base64").toString("utf-8") : null,
+                        size: record.fields.resOriginalFileSize?.value ?? null,
+                        created: record.fields.originalCreationDate?.value ?? null,
+                        assetDate: record.fields.originalCreationDate?.value ?? null,
+                        addedDate: record.fields.originalCreationDate?.value ?? null,
+                        dimension: {
+                            width: record.fields.resOriginalWidth?.value ?? null,
+                            height: record.fields.resOriginalHeight?.value ?? null
+                        },
+                        downloadURL: record.fields.resOriginalRes?.value?.downloadURL ?? null,
+                        download: async () => {
+                            const url = record.fields.resOriginalRes?.value?.downloadURL;
+                            if (!url) return null;
+                            const response = await fetch(url);
+                            return response.arrayBuffer();
+                        }
+                    }));
+                }
+            };
+
+            sharedAlbums.set(sharedAlbum.title, sharedAlbum);
+        }
+
+        return sharedAlbums;
+    }
 }
 
 
