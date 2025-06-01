@@ -62,28 +62,28 @@ authenticate.then(async (icloud) => {
             creationDate: firstSharedAlbum.creationDate
         });
 
-        // Test getting assets
-        const assets = await firstSharedAlbum.getAssets();
-        console.log("\nAssets in shared album:", assets.length);
+        // Test getting photos
+        const photos = await firstSharedAlbum.getPhotos();
+        console.log("\nPhotos in shared album:", photos.length);
         
-        if (assets.length > 0) {
-            const firstAsset = assets[0];
-            console.log("\nFirst asset in shared album:", {
-                guid: firstAsset.guid,
-                filename: firstAsset.filename,
-                size: firstAsset.size,
-                created: new Date(firstAsset.created).toISOString(),
-                assetDate: new Date(firstAsset.assetDate).toISOString(),
-                addedDate: new Date(firstAsset.addedDate).toISOString(),
-                dimension: firstAsset.dimension,
-                downloadURL: firstAsset.downloadURL
+        if (photos.length > 0) {
+            const firstPhoto = photos[0];
+            console.log("\nFirst photo in shared album:", {
+                guid: firstPhoto.guid,
+                filename: firstPhoto.filename,
+                size: firstPhoto.size,
+                created: new Date(firstPhoto.created).toISOString(),
+                assetDate: new Date(firstPhoto.assetDate).toISOString(),
+                addedDate: new Date(firstPhoto.addedDate).toISOString(),
+                dimension: firstPhoto.dimension,
+                downloadURL: firstPhoto.downloadURL
             });
 
-            // Try to download the first asset
-            const filePath = firstAsset.filename;
+            // Try to download the first photo
+            const filePath = firstPhoto.filename;
             try {
                 const absFilePath = path.resolve(filePath);
-                await writeFile(absFilePath, Buffer.from(await firstAsset.download()));
+                await writeFile(absFilePath, Buffer.from(await firstPhoto.download()));
                 console.log(`Successfully saved photo to ${absFilePath}`);
             } catch (err) {
                 console.log("Cannot save photo", err);

@@ -19,6 +19,33 @@ type Album = {
     }> | null
 }
 
+interface SharedAlbum {
+    guid: string;
+    title: string;
+    ctag: string;
+    location: string;
+    ownerId: string;
+    isPublic: boolean;
+    allowContributions: boolean;
+    creationDate: number;
+    getPhotos(): Promise<Array<SharedAlbumAsset>>;
+}
+
+interface SharedAlbumAsset {
+    guid: string;
+    filename: string;
+    size: number;
+    created: number;
+    assetDate: number;
+    addedDate: number;
+    dimension: {
+        width: number;
+        height: number;
+    };
+    downloadURL: string;
+    download(): Promise<ArrayBuffer>;
+}
+
 interface Folder {
     recordName: string
     recordType: string
@@ -444,33 +471,6 @@ const SMART_FOLDERS = {
     }
 };
 
-interface SharedAlbum {
-    guid: string;
-    title: string;
-    ctag: string;
-    location: string;
-    ownerId: string;
-    isPublic: boolean;
-    allowContributions: boolean;
-    creationDate: number;
-    getAssets(): Promise<Array<SharedAlbumAsset>>;
-}
-
-interface SharedAlbumAsset {
-    guid: string;
-    filename: string;
-    size: number;
-    created: number;
-    assetDate: number;
-    addedDate: number;
-    dimension: {
-        width: number;
-        height: number;
-    };
-    downloadURL: string;
-    download(): Promise<ArrayBuffer>;
-}
-
 export class iCloudPhotosEndpointService {
     /* eslint-disable no-useless-constructor, no-empty-function */
     constructor(private serviceUri: string, private headers: HeadersInit) {}
@@ -607,65 +607,24 @@ export class iCloudPhotosService {
 
         // Create album objects with a method to fetch assets
         for (const album of albumsResponse.albums) {
-            const sharedAlbum: SharedAlbum = {
-                guid: album.albumguid,
-                title: album.attributes.name,
-                ctag: album.albumctag,
-                location: album.albumlocation,
-                ownerId: album.ownerdsid,
-                isPublic: album.attributes.ispublic === "1",
-                allowContributions: album.attributes.allowcontributions === "1",
-                creationDate: album.attributes.creationDate,
-                getAssets: async () => {
-                    const albumUrl = new URL(album.albumlocation);
-                    const dsid = album.ownerdsid;
-                    const albumEndpointService = new iCloudSharedPhotosEndpointService(
-                        `${albumUrl.origin}/${dsid}`,
-                        this.service.authStore.getHeaders()
-                    );
+            const albumUrl = new URL(album.albumlocation);
+            const dsid = album.ownerdsid;
+            const albumEndpointService = new iCloudSharedPhotosEndpointService(
+                `${albumUrl.origin}/${dsid}`,
+                this.service.authStore.getHeaders()
+            );
 
-                    const assetsResponse = await albumEndpointService.fetch<{records: Array<{
-                        recordName: string;
-                        recordType: string;
-                        fields: {
-                            filenameEnc: { value: string; type: string };
-                            resOriginalRes: { value: { downloadURL: string } };
-                            resOriginalWidth: { value: number };
-                            resOriginalHeight: { value: number };
-                            originalCreationDate: { value: number };
-                            resOriginalFileSize: { value: number };
-                        };
-                    }>}>(
-                        "/sharedstreams/webgetassets",
-                        {
-                            albumguid: album.albumguid,
-                            offset: "0",
-                            limit: "100",
-                            albumctag: album.albumctag
-                        }
-                    );
-
-                    return assetsResponse.records.map(record => ({
-                        guid: record.recordName,
-                        filename: record.fields.filenameEnc?.value ? Buffer.from(record.fields.filenameEnc.value, "base64").toString("utf-8") : null,
-                        size: record.fields.resOriginalFileSize?.value ?? null,
-                        created: record.fields.originalCreationDate?.value ?? null,
-                        assetDate: record.fields.originalCreationDate?.value ?? null,
-                        addedDate: record.fields.originalCreationDate?.value ?? null,
-                        dimension: {
-                            width: record.fields.resOriginalWidth?.value ?? null,
-                            height: record.fields.resOriginalHeight?.value ?? null
-                        },
-                        downloadURL: record.fields.resOriginalRes?.value?.downloadURL ?? null,
-                        download: async () => {
-                            const url = record.fields.resOriginalRes?.value?.downloadURL;
-                            if (!url) return null;
-                            const response = await fetch(url);
-                            return response.arrayBuffer();
-                        }
-                    }));
-                }
-            };
+            const sharedAlbum = new iCloudSharedPhotoAlbum(
+                albumEndpointService,
+                album.attributes.name,
+                album.albumguid,
+                album.albumctag,
+                album.albumlocation,
+                album.ownerdsid,
+                album.attributes.ispublic === "1",
+                album.attributes.allowcontributions === "1",
+                album.attributes.creationDate
+            );
 
             sharedAlbums.set(sharedAlbum.title, sharedAlbum);
         }
@@ -986,4 +945,194 @@ class iCloudPhotoAsset {
         }
     }
 }
-export type { Album, AssetRecord, Folder, MasterRecord, QueryPhotoResponse, UnknownRecord, iCloudPhotoAlbum, iCloudPhotoAsset };
+
+class iCloudSharedPhotoAsset {
+    private readonly PHOTO_VERSION_LOOKUP = {
+        original: "resOriginal",
+        medium: "resJPEGMed",
+        thumb: "resJPEGThumb"
+    };
+    private readonly VIDEO_VERSION_LOOKUP = {
+        original: "resOriginal",
+        medium: "resVidMed",
+        thumb: "resVidSmall"
+    };
+    private _versions = {};
+
+    constructor(
+        private endpointService: iCloudSharedPhotosEndpointService,
+        private record: {
+            recordName: string;
+            recordType: string;
+            fields: {
+                filenameEnc: { value: string; type: string };
+                resOriginalRes: { value: { downloadURL: string; size: number } };
+                resOriginalWidth: { value: number };
+                resOriginalHeight: { value: number };
+                originalCreationDate: { value: number };
+                resOriginalFileSize: { value: number };
+            };
+        }
+    ) {}
+
+    get id() {
+        return this.record.recordName;
+    }
+
+    get guid() {
+        return this.record.recordName;
+    }
+
+    get filename() {
+        return this.record.fields.filenameEnc?.value ? 
+            Buffer.from(this.record.fields.filenameEnc.value, "base64").toString("utf-8") : 
+            null;
+    }
+
+    get size() {
+        return this.record.fields.resOriginalFileSize?.value ?? null;
+    }
+
+    get created() {
+        return this.record.fields.originalCreationDate?.value ?? null;
+    }
+
+    get assetDate() {
+        return this.record.fields.originalCreationDate?.value ?? null;
+    }
+
+    get addedDate() {
+        return this.record.fields.originalCreationDate?.value ?? null;
+    }
+
+    get dimension() {
+        return {
+            width: this.record.fields.resOriginalWidth?.value ?? null,
+            height: this.record.fields.resOriginalHeight?.value ?? null
+        };
+    }
+
+    get downloadURL() {
+        return this.record.fields.resOriginalRes?.value?.downloadURL ?? null;
+    }
+
+    get versions() {
+        if (Object.keys(this._versions).length <= 0) {
+            // For shared photos, we only have the original version
+            this._versions = {
+                original: {
+                    filename: this.filename,
+                    width: this.record.fields.resOriginalWidth?.value,
+                    height: this.record.fields.resOriginalHeight?.value,
+                    size: this.record.fields.resOriginalFileSize?.value,
+                    url: this.record.fields.resOriginalRes?.value.downloadURL,
+                    type: "image/jpeg" // Default type for shared photos
+                }
+            };
+        }
+
+        return this._versions;
+    }
+
+    async download(version = "original") {
+        if (Object.keys(this._versions).length <= 0)
+            this.versions;
+
+        if (!(version in this._versions))
+            return null;
+
+        const response = await fetch(this.versions[version].url);
+        return response.arrayBuffer();
+    }
+}
+
+class iCloudSharedPhotoAlbum {
+    private _length: number;
+    private _photos: Array<iCloudSharedPhotoAsset> = [];
+
+    constructor(
+        private endpointService: iCloudSharedPhotosEndpointService,
+        private name: string,
+        private albumGuid: string,
+        private albumCtag: string,
+        private _location: string,
+        private _ownerId: string,
+        private _isPublic: boolean,
+        private _allowContributions: boolean,
+        private _creationDate: number,
+        private pageSize = 100
+    ) {}
+
+    get title(): string { 
+        return this.name; 
+    }
+
+    get guid(): string {
+        return this.albumGuid;
+    }
+
+    get ctag(): string {
+        return this.albumCtag;
+    }
+
+    get location(): string {
+        return this._location;
+    }
+
+    get ownerId(): string {
+        return this._ownerId;
+    }
+
+    get isPublic(): boolean {
+        return this._isPublic;
+    }
+
+    get allowContributions(): boolean {
+        return this._allowContributions;
+    }
+
+    get creationDate(): number {
+        return this._creationDate;
+    }
+
+    async getLength(): Promise<number> {
+        if (!this._length) {
+            const result = await this.endpointService.fetch<{records: Array<any>}>(
+                "/sharedstreams/webgetassets",
+                {
+                    albumguid: this.albumGuid,
+                    offset: "0",
+                    limit: "1",
+                    albumctag: this.albumCtag
+                }
+            );
+
+            this._length = result.records.length;
+        }
+
+        return this._length;
+    }
+
+    async getPhotos(): Promise<Array<iCloudSharedPhotoAsset>> {
+        if (this._photos.length)
+            return this._photos;
+
+        const result = await this.endpointService.fetch<{records: Array<any>}>(
+            "/sharedstreams/webgetassets",
+            {
+                albumguid: this.albumGuid,
+                offset: "0",
+                limit: this.pageSize.toString(),
+                albumctag: this.albumCtag
+            }
+        );
+
+        this._photos = result.records.map(record => 
+            new iCloudSharedPhotoAsset(this.endpointService, record)
+        );
+
+        return this._photos;
+    }
+}
+
+export type { Album, AssetRecord, Folder, MasterRecord, QueryPhotoResponse, UnknownRecord, iCloudPhotoAlbum, iCloudPhotoAsset, iCloudSharedPhotoAlbum, iCloudSharedPhotoAsset };
