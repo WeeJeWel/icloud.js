@@ -941,33 +941,26 @@ class iCloudSharedPhotoAsset {
     get id() {
         return this.record.recordName;
     }
-
     get guid() {
         return this.record.recordName;
     }
-
     get filename() {
         return this.record.fields.filenameEnc?.value ? 
             Buffer.from(this.record.fields.filenameEnc.value, "base64").toString("utf-8") : 
             null;
     }
-
     get size() {
         return this.record.fields.resOriginalFileSize?.value ?? null;
     }
-
     get created() {
-        return this.record.fields.originalCreationDate?.value ?? null;
+        return this.assetDate;
     }
-
     get assetDate() {
-        return this.record.fields.originalCreationDate?.value ?? null;
+        return dayjs(this.record.fields.originalCreationDate.value).local().toDate();
     }
-
     get addedDate() {
-        return this.record.fields.originalCreationDate?.value ?? null;
+        return dayjs(this.record.fields.originalCreationDate.value).local().toDate();
     }
-
     get dimension() {
         return {
             width: this.record.fields.resOriginalWidth?.value ?? null,
